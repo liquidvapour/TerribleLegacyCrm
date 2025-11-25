@@ -1,713 +1,536 @@
-using System;
 using System.Data;
-using System.Drawing;
-using System.Windows.Forms;
 using System.Data.SQLite;
+using System.Drawing;
+using System.IO;
+using System.Windows.Forms;
 
-namespace TerribleLegacyCrm
+namespace TerribleLegacyCrm;
+
+internal static class Program
 {
-    static class Program
+    [STAThread]
+    private static void Main()
     {
-        [STAThread]
-        static void Main()
+        Application.EnableVisualStyles();
+        Application.SetCompatibleTextRenderingDefault(false);
+        using var connection = Database.CreateOpenConnection();
+        Application.Run(new MainCrazyForm(new CrmRepository(connection)));
+    }
+}
+
+internal sealed class MainCrazyForm : Form
+{
+    private readonly CrmRepository _repository;
+    private readonly string _currentUser = "admin";
+    private int? _currentCustomerId;
+    private DataTable _customerTable = new();
+    private DataTable _notesTable = new();
+
+    private DataGridView gridCustomers = null!;
+    private DataGridView gridNotes = null!;
+    private TextBox txtName = null!;
+    private TextBox txtEmail = null!;
+    private TextBox txtPhone = null!;
+    private TextBox txtStatus = null!;
+    private TextBox txtSearch = null!;
+    private TextBox txtNote = null!;
+    private Label lblSelectedCustomer = null!;
+    private ComboBox comboSearchBy = null!;
+
+    public MainCrazyForm(CrmRepository repository)
+    {
+        _repository = repository;
+
+        Text = "SuperCRM 2010 (clean-ish)";
+        Width = 1200;
+        Height = 700;
+        StartPosition = FormStartPosition.CenterScreen;
+
+        InitControls();
+        ReloadCustomers();
+        ReloadNotes();
+    }
+
+    private void InitControls()
+    {
+        gridCustomers = new DataGridView
         {
-            // No config, just run it
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new MainCrazyForm());
+            Location = new Point(10, 10),
+            Size = new Size(550, 300),
+            ReadOnly = true,
+            SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+            MultiSelect = false,
+            AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill
+        };
+        gridCustomers.CellClick += GridCustomers_CellClick;
+        gridCustomers.DataBindingComplete += GridCustomers_DataBindingComplete;
+        Controls.Add(gridCustomers);
+
+        gridNotes = new DataGridView
+        {
+            Location = new Point(10, 320),
+            Size = new Size(550, 200),
+            ReadOnly = true,
+            SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+            AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill
+        };
+        Controls.Add(gridNotes);
+
+        const int xBase = 580;
+        const int yBase = 10;
+        const int labelWidth = 80;
+        const int textWidth = 200;
+
+        void AddLabel(string text, int y)
+        {
+            var label = new Label
+            {
+                Text = text,
+                Location = new Point(xBase, y),
+                Width = labelWidth
+            };
+            Controls.Add(label);
+        }
+
+        AddLabel("Name", yBase);
+        txtName = new TextBox { Location = new Point(xBase + labelWidth, yBase), Width = textWidth };
+        Controls.Add(txtName);
+
+        AddLabel("Email", yBase + 30);
+        txtEmail = new TextBox { Location = new Point(xBase + labelWidth, yBase + 30), Width = textWidth };
+        Controls.Add(txtEmail);
+
+        AddLabel("Phone", yBase + 60);
+        txtPhone = new TextBox { Location = new Point(xBase + labelWidth, yBase + 60), Width = textWidth };
+        Controls.Add(txtPhone);
+
+        AddLabel("Status", yBase + 90);
+        txtStatus = new TextBox { Location = new Point(xBase + labelWidth, yBase + 90), Width = textWidth, Text = "New" };
+        Controls.Add(txtStatus);
+
+        var buttonAdd = new Button { Text = "Add Cust", Location = new Point(xBase, yBase + 130) };
+        buttonAdd.Click += ButtonAdd_Click;
+        Controls.Add(buttonAdd);
+
+        var buttonEdit = new Button { Text = "Edit Cust", Location = new Point(xBase + 90, yBase + 130) };
+        buttonEdit.Click += ButtonEdit_Click;
+        Controls.Add(buttonEdit);
+
+        var buttonDelete = new Button { Text = "Delete Cust", Location = new Point(xBase + 180, yBase + 130) };
+        buttonDelete.Click += ButtonDelete_Click;
+        Controls.Add(buttonDelete);
+
+        AddLabel("Search", yBase + 180);
+        txtSearch = new TextBox { Location = new Point(xBase + 60, yBase + 180), Width = 150 };
+        Controls.Add(txtSearch);
+
+        comboSearchBy = new ComboBox { Location = new Point(xBase + 220, yBase + 180), Width = 100 };
+        comboSearchBy.Items.AddRange(new object[] { "Name", "Email", "Phone" });
+        comboSearchBy.SelectedIndex = 0;
+        Controls.Add(comboSearchBy);
+
+        var buttonSearch = new Button { Text = "Search!", Location = new Point(xBase, yBase + 210) };
+        buttonSearch.Click += ButtonSearch_Click;
+        Controls.Add(buttonSearch);
+
+        var buttonLoadAll = new Button { Text = "Load All", Location = new Point(xBase + 90, yBase + 210) };
+        buttonLoadAll.Click += (_, _) => ReloadCustomers();
+        Controls.Add(buttonLoadAll);
+
+        var buttonSort = new Button { Text = "Sort Weird", Location = new Point(xBase + 180, yBase + 210) };
+        buttonSort.Click += ButtonSort_Click;
+        Controls.Add(buttonSort);
+
+        var buttonDeal = new Button { Text = "Add Deal??", Location = new Point(xBase + 270, yBase + 210) };
+        buttonDeal.Click += ButtonDeal_Click;
+        Controls.Add(buttonDeal);
+
+        AddLabel("Note", 280);
+        txtNote = new TextBox { Location = new Point(xBase, 300), Multiline = true, Width = 330, Height = 100 };
+        Controls.Add(txtNote);
+
+        var buttonAddNote = new Button { Text = "Add Note", Location = new Point(xBase, 410) };
+        buttonAddNote.Click += ButtonAddNote_Click;
+        Controls.Add(buttonAddNote);
+
+        lblSelectedCustomer = new Label
+        {
+            Text = "Selected: (none)",
+            Location = new Point(10, 530),
+            Width = 500
+        };
+        Controls.Add(lblSelectedCustomer);
+    }
+
+    private void ReloadCustomers(string order = "Name")
+    {
+        _customerTable = _repository.GetActiveCustomers(order);
+        gridCustomers.DataSource = _customerTable;
+    }
+
+    private void ReloadNotes()
+    {
+        _notesTable = _repository.GetNotesForCustomer(_currentCustomerId);
+        gridNotes.DataSource = _notesTable;
+    }
+
+    private void GridCustomers_DataBindingComplete(object? sender, DataGridViewBindingCompleteEventArgs e)
+    {
+        var columns = gridCustomers?.Columns;
+        var deletedColumn = columns?["Deleted"];
+        if (deletedColumn != null)
+        {
+            deletedColumn.Visible = false;
         }
     }
 
-    public class MainCrazyForm : Form
+    private void GridCustomers_CellClick(object? sender, DataGridViewCellEventArgs e)
     {
-        // Global stuff because why not
-        public static SQLiteConnection globalConn;
-        public static string CURRENT_USER = "admin"; // TODO implement login
-        public static int currentCustomerId = -1;
-        public static DataTable custTableCache;
-        public static DataTable notesTableCache;
-        public static DataTable dealsTableCache;
-
-        private DataGridView gridCustomers;
-        private DataGridView gridNotes;
-        private TextBox txtName;
-        private TextBox txtEmail;
-        private TextBox txtPhone;
-        private TextBox txtStatus;
-        private TextBox txtSearch;
-        private TextBox txtNote;
-        private Button button1Add;
-        private Button button2Edit;
-        private Button button3Delete;
-        private Button button4AddNote;
-        private Button button5Search;
-        private Button button6LoadAll;
-        private Button button7SortWeird;
-        private Label lblSelectedCustomer;
-        private ComboBox comboSearchBy;
-        private Button button8FakeDeal;
-
-        public MainCrazyForm()
+        if (e.RowIndex < 0 || e.RowIndex >= gridCustomers.Rows.Count)
         {
-            this.Text = "SuperCRM 2010";
-            this.Width = 1200;
-            this.Height = 700;
-            this.StartPosition = FormStartPosition.CenterScreen;
-
-            initControls();
-            initDb();
-
-            // Load initial data
-            LoadAllCustomersIntoGrid();
-            LoadNotesForCurrentCustomer();
+            return;
         }
 
-        private void initControls()
+        var row = gridCustomers.Rows[e.RowIndex];
+        if (!int.TryParse(row.Cells["Id"].Value?.ToString(), out var id))
         {
-            // Customers grid
-            gridCustomers = new DataGridView();
-            gridCustomers.Location = new Point(10, 10);
-            gridCustomers.Size = new Size(550, 300);
-            gridCustomers.ReadOnly = true;
-            gridCustomers.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
-            gridCustomers.MultiSelect = false;
-            gridCustomers.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
-            gridCustomers.CellClick += gridCustomers_CellClick;
-            gridCustomers.DataBindingComplete += gridCustomers_DataBindingComplete;
-            this.Controls.Add(gridCustomers);
-
-            // Notes grid
-            gridNotes = new DataGridView();
-            gridNotes.Location = new Point(10, 320);
-            gridNotes.Size = new Size(550, 200);
-            gridNotes.ReadOnly = true;
-            gridNotes.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
-            gridNotes.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
-            this.Controls.Add(gridNotes);
-
-            // Labels and textboxes
-            int xBase = 580;
-            int yBase = 10;
-            int labelWidth = 80;
-            int textWidth = 200;
-
-            var lblName = new Label();
-            lblName.Text = "Name";
-            lblName.Location = new Point(xBase, yBase);
-            lblName.Width = labelWidth;
-            this.Controls.Add(lblName);
-
-            txtName = new TextBox();
-            txtName.Location = new Point(xBase + labelWidth, yBase);
-            txtName.Width = textWidth;
-            this.Controls.Add(txtName);
-
-            var lblEmail = new Label();
-            lblEmail.Text = "Email";
-            lblEmail.Location = new Point(xBase, yBase + 30);
-            lblEmail.Width = labelWidth;
-            this.Controls.Add(lblEmail);
-
-            txtEmail = new TextBox();
-            txtEmail.Location = new Point(xBase + labelWidth, yBase + 30);
-            txtEmail.Width = textWidth;
-            this.Controls.Add(txtEmail);
-
-            var lblPhone = new Label();
-            lblPhone.Text = "Phone";
-            lblPhone.Location = new Point(xBase, yBase + 60);
-            lblPhone.Width = labelWidth;
-            this.Controls.Add(lblPhone);
-
-            txtPhone = new TextBox();
-            txtPhone.Location = new Point(xBase + labelWidth, yBase + 60);
-            txtPhone.Width = textWidth;
-            this.Controls.Add(txtPhone);
-
-            var lblStatus = new Label();
-            lblStatus.Text = "Status";
-            lblStatus.Location = new Point(xBase, yBase + 90);
-            lblStatus.Width = labelWidth;
-            this.Controls.Add(lblStatus);
-
-            txtStatus = new TextBox();
-            txtStatus.Location = new Point(xBase + labelWidth, yBase + 90);
-            txtStatus.Width = textWidth;
-            txtStatus.Text = "New"; // default
-            this.Controls.Add(txtStatus);
-
-            // Buttons for customers
-            button1Add = new Button();
-            button1Add.Text = "Add Cust";
-            button1Add.Location = new Point(xBase, yBase + 130);
-            button1Add.Click += button1_Click_AddCustomer;
-            this.Controls.Add(button1Add);
-
-            button2Edit = new Button();
-            button2Edit.Text = "Edit Cust";
-            button2Edit.Location = new Point(xBase + 90, yBase + 130);
-            button2Edit.Click += button2_Click_EditCustomer;
-            this.Controls.Add(button2Edit);
-
-            button3Delete = new Button();
-            button3Delete.Text = "Delete Cust";
-            button3Delete.Location = new Point(xBase + 180, yBase + 130);
-            button3Delete.Click += button3_Click_DeleteCustomer;
-            this.Controls.Add(button3Delete);
-
-            // Search controls
-            var lblSearch = new Label();
-            lblSearch.Text = "Search";
-            lblSearch.Location = new Point(xBase, yBase + 180);
-            lblSearch.Width = 60;
-            this.Controls.Add(lblSearch);
-
-            txtSearch = new TextBox();
-            txtSearch.Location = new Point(xBase + 60, yBase + 180);
-            txtSearch.Width = 150;
-            this.Controls.Add(txtSearch);
-
-            comboSearchBy = new ComboBox();
-            comboSearchBy.Items.Add("Name");
-            comboSearchBy.Items.Add("Email");
-            comboSearchBy.Items.Add("Phone");
-            comboSearchBy.SelectedIndex = 0;
-            comboSearchBy.Location = new Point(xBase + 220, yBase + 180);
-            comboSearchBy.Width = 100;
-            this.Controls.Add(comboSearchBy);
-
-            button5Search = new Button();
-            button5Search.Text = "Search!";
-            button5Search.Location = new Point(xBase, yBase + 210);
-            button5Search.Click += button5_Click_Search;
-            this.Controls.Add(button5Search);
-
-            button6LoadAll = new Button();
-            button6LoadAll.Text = "Load All";
-            button6LoadAll.Location = new Point(xBase + 90, yBase + 210);
-            button6LoadAll.Click += button6_Click_LoadAll;
-            this.Controls.Add(button6LoadAll);
-
-            button7SortWeird = new Button();
-            button7SortWeird.Text = "Sort Weird";
-            button7SortWeird.Location = new Point(xBase + 180, yBase + 210);
-            button7SortWeird.Click += button7_Click_SortWeird;
-            this.Controls.Add(button7SortWeird);
-
-            // Deal button that does nothing useful
-            button8FakeDeal = new Button();
-            button8FakeDeal.Text = "Add Deal??";
-            button8FakeDeal.Location = new Point(xBase + 270, yBase + 210);
-            button8FakeDeal.Click += button8_Click_AddDealMaybe;
-            this.Controls.Add(button8FakeDeal);
-
-            // Note area
-            var lblNote = new Label();
-            lblNote.Text = "Note";
-            lblNote.Location = new Point(xBase, 280);
-            lblNote.Width = 50;
-            this.Controls.Add(lblNote);
-
-            txtNote = new TextBox();
-            txtNote.Location = new Point(xBase, 300);
-            txtNote.Multiline = true;
-            txtNote.Width = 330;
-            txtNote.Height = 100;
-            this.Controls.Add(txtNote);
-
-            button4AddNote = new Button();
-            button4AddNote.Text = "Add Note";
-            button4AddNote.Location = new Point(xBase, 410);
-            button4AddNote.Click += button4_Click_AddNote;
-            this.Controls.Add(button4AddNote);
-
-            // Selected customer label
-            lblSelectedCustomer = new Label();
-            lblSelectedCustomer.Text = "Selected: (none)";
-            lblSelectedCustomer.Location = new Point(10, 530);
-            lblSelectedCustomer.Width = 500;
-            this.Controls.Add(lblSelectedCustomer);
+            return;
         }
 
-        private void initDb()
+        _currentCustomerId = id;
+        lblSelectedCustomer.Text = $"Selected: {row.Cells["Name"].Value}";
+        txtName.Text = row.Cells["Name"].Value?.ToString() ?? string.Empty;
+        txtEmail.Text = row.Cells["Email"].Value?.ToString() ?? string.Empty;
+        txtPhone.Text = row.Cells["Phone"].Value?.ToString() ?? string.Empty;
+        txtStatus.Text = row.Cells["Status"].Value?.ToString() ?? string.Empty;
+        ReloadNotes();
+    }
+
+    private void ButtonAdd_Click(object? sender, EventArgs e)
+    {
+        var input = ReadCustomerInput();
+        if (input == null)
         {
-            try
-            {
-                // Hardcoded connection string. Very secure.
-                string cs = "Data Source=data/terriblecrm.db;Foreign Keys=True;";
-                globalConn = new SQLiteConnection(cs);
-                globalConn.Open();
-
-                // Just make sure tables exist kind of
-                var cmd = new SQLiteCommand(@"
-                    CREATE TABLE IF NOT EXISTS customers(
-                        Id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        Name VARCHAR(255),
-                        Email VARCHAR(255),
-                        Phone VARCHAR(50),
-                        Status VARCHAR(50),
-                        Deleted INTEGER DEFAULT 0
-                    );
-                    ", globalConn);
-                cmd.ExecuteNonQuery();
-
-                var cmd2 = new SQLiteCommand(@"
-                    CREATE TABLE IF NOT EXISTS notes(
-                        Id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        CustomerId INTEGER,
-                        NoteText TEXT,
-                        CreatedBy VARCHAR(255),
-                        CreatedOn DATETIME DEFAULT CURRENT_TIMESTAMP
-                    );", globalConn);
-                cmd2.ExecuteNonQuery();
-
-                var cmd3 = new SQLiteCommand(@"
-                    CREATE TABLE IF NOT EXISTS deals(
-                        Id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        CustomerId INTEGER,
-                        Title VARCHAR(255),
-                        Amount REAL,
-                        Stage VARCHAR(50)
-                    );", globalConn);
-                cmd3.ExecuteNonQuery();
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show("Could not connect to DB, but let's just continue anyway.\n" + ex.Message);
-                // but do nothing else
-            }
+            return;
         }
 
-        private void LoadAllCustomersIntoGrid()
+        _repository.AddCustomer(input.Value);
+        ReloadCustomers();
+        MessageBox.Show("Customer added.");
+    }
+
+    private void ButtonEdit_Click(object? sender, EventArgs e)
+    {
+        if (_currentCustomerId is null)
         {
-            try
-            {
-                // This function also used by other things, so careful changing it
-                string sql = "SELECT * FROM customers WHERE Deleted = 0 ORDER BY Name";
-                var da = new SQLiteDataAdapter(sql, globalConn);
-                var dt = new DataTable();
-                da.Fill(dt);
-                custTableCache = dt; // cache forever
-                gridCustomers.DataSource = dt;
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show("Oops");
-            }
+            MessageBox.Show("Select a customer first.");
+            return;
         }
 
-        private void LoadNotesForCurrentCustomer()
+        var input = ReadCustomerInput();
+        if (input == null)
         {
-            // This will randomly reuse global currentCustomerId sometimes before it's set
-            try
-            {
-                string sql;
-                if (currentCustomerId <= 0)
-                {
-                    sql = "SELECT * FROM notes ORDER BY CreatedOn DESC LIMIT 20"; // show random notes
-                }
-                else
-                {
-                    sql = "SELECT * FROM notes WHERE CustomerId = " + currentCustomerId + " ORDER BY CreatedOn DESC";
-                }
-
-                var da = new SQLiteDataAdapter(sql, globalConn);
-                var dt = new DataTable();
-                da.Fill(dt);
-                notesTableCache = dt;
-                gridNotes.DataSource = dt;
-            }
-            catch
-            {
-                MessageBox.Show("Oops");
-            }
+            return;
         }
 
-        private void gridCustomers_CellClick(object sender, DataGridViewCellEventArgs e)
+        _repository.UpdateCustomer(_currentCustomerId.Value, input.Value);
+        ReloadCustomers("Status, Name");
+        MessageBox.Show("Customer updated.");
+    }
+
+    private void ButtonDelete_Click(object? sender, EventArgs e)
+    {
+        if (_currentCustomerId is null)
         {
-            try
-            {
-                if (e.RowIndex >= 0 && gridCustomers.Rows.Count > e.RowIndex)
-                {
-                    var row = gridCustomers.Rows[e.RowIndex];
-                    if (row.Cells["Id"].Value != null)
-                    {
-                        // Global state update
-                        currentCustomerId = Convert.ToInt32(row.Cells["Id"].Value);
-                        lblSelectedCustomer.Text = "Selected: " + row.Cells["Name"].Value;
-                        txtName.Text = Convert.ToString(row.Cells["Name"].Value);
-                        txtEmail.Text = Convert.ToString(row.Cells["Email"].Value);
-                        txtPhone.Text = Convert.ToString(row.Cells["Phone"].Value);
-                        txtStatus.Text = Convert.ToString(row.Cells["Status"].Value);
-                        LoadNotesForCurrentCustomer();
-                    }
-                }
-            }
-            catch
-            {
-                // swallow
-            }
+            MessageBox.Show("Select a customer to delete.");
+            return;
         }
 
-        private void gridCustomers_DataBindingComplete(object sender, DataGridViewBindingCompleteEventArgs e)
+        _repository.SoftDeleteCustomer(_currentCustomerId.Value);
+        _currentCustomerId = null;
+        lblSelectedCustomer.Text = "Selected: (none)";
+        ReloadCustomers();
+        ReloadNotes();
+        MessageBox.Show("Customer deleted (soft delete).");
+    }
+
+    private void ButtonAddNote_Click(object? sender, EventArgs e)
+    {
+        if (_currentCustomerId is null)
         {
-            // Hide Deleted column sometimes but not always
-            try
-            {
-                if (gridCustomers.Columns.Contains("Deleted"))
-                {
-                    gridCustomers.Columns["Deleted"].Visible = false;
-                }
-            }
-            catch { }
+            MessageBox.Show("Pick a customer first.");
+            return;
         }
 
-        private void button1_Click_AddCustomer(object sender, EventArgs e)
+        if (string.IsNullOrWhiteSpace(txtNote.Text))
         {
-            // Add customer
-            string nm = txtName.Text;
-            string em = txtEmail.Text;
-            string ph = txtPhone.Text;
-            string st = txtStatus.Text;
-
-            if (string.IsNullOrWhiteSpace(nm))
-            {
-                MessageBox.Show("Name required");
-                return;
-            }
-
-            try
-            {
-                string sql = "INSERT INTO customers(Name,Email,Phone,Status,Deleted) VALUES('" +
-                             nm + "','" + em + "','" + ph + "','" + st + "',0)";
-                var cmd = new SQLiteCommand(sql, globalConn);
-                cmd.ExecuteNonQuery();
-
-                // Refresh list with duplicate code
-                string sql2 = "SELECT * FROM customers WHERE Deleted = 0 ORDER BY Name";
-                var da = new SQLiteDataAdapter(sql2, globalConn);
-                var dt = new DataTable();
-                da.Fill(dt);
-                custTableCache = dt;
-                gridCustomers.DataSource = dt;
-
-                MessageBox.Show("Customer added");
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show("Oops");
-            }
+            MessageBox.Show("Write something first.");
+            return;
         }
 
-        private void button2_Click_EditCustomer(object sender, EventArgs e)
+        _repository.AddNote(_currentCustomerId.Value, txtNote.Text.Trim(), _currentUser);
+        txtNote.Clear();
+        ReloadNotes();
+        MessageBox.Show("Note added.");
+    }
+
+    private void ButtonSearch_Click(object? sender, EventArgs e)
+    {
+        if (string.IsNullOrWhiteSpace(txtSearch.Text))
         {
-            // Edit customer inline
-            if (currentCustomerId <= 0)
-            {
-                MessageBox.Show("Select a customer first");
-                return;
-            }
-
-            string nm = txtName.Text;
-            string em = txtEmail.Text;
-            string ph = txtPhone.Text;
-            string st = txtStatus.Text;
-
-            try
-            {
-                string sql = "UPDATE customers SET Name='" + nm +
-                             "', Email='" + em +
-                             "', Phone='" + ph +
-                             "', Status='" + st +
-                             "' WHERE Id=" + currentCustomerId;
-
-                var cmd = new SQLiteCommand(sql, globalConn);
-                cmd.ExecuteNonQuery();
-
-                // Another copy of refresh logic, slightly different order
-                string sql2 = "SELECT * FROM customers WHERE Deleted=0 ORDER BY Status, Name";
-                var da = new SQLiteDataAdapter(sql2, globalConn);
-                var dt = new DataTable();
-                da.Fill(dt);
-                custTableCache = dt;
-                gridCustomers.DataSource = dt;
-
-                MessageBox.Show("Customer updated");
-            }
-            catch
-            {
-                MessageBox.Show("Oops");
-            }
+            ReloadCustomers();
+            return;
         }
 
-        private void button3_Click_DeleteCustomer(object sender, EventArgs e)
+        var field = comboSearchBy.SelectedItem?.ToString() switch
         {
-            // "Delete" but not really deleting
-            if (currentCustomerId <= 0)
-            {
-                MessageBox.Show("Select a customer to delete");
-                return;
-            }
+            "Email" => CustomerSearchField.Email,
+            "Phone" => CustomerSearchField.Phone,
+            _ => CustomerSearchField.Name
+        };
 
-            try
-            {
-                // Soft delete, but UI says Deleted
-                string sql = "UPDATE customers SET Deleted = 1, Status='Deleted' WHERE Id=" + currentCustomerId;
-                var cmd = new SQLiteCommand(sql, globalConn);
-                cmd.ExecuteNonQuery();
+        _customerTable = _repository.SearchCustomers(txtSearch.Text.Trim(), field);
+        gridCustomers.DataSource = _customerTable;
 
-                // Load all again in a completely new way
-                LoadAllCustomersIntoGrid(); // uses WHERE Deleted = 0 so the user vanishes
-
-                MessageBox.Show("Customer deleted"); // Actually just marked
-                currentCustomerId = -1;
-                lblSelectedCustomer.Text = "Selected: (none)";
-            }
-            catch
-            {
-                MessageBox.Show("Oops");
-            }
-        }
-
-        private void button4_Click_AddNote(object sender, EventArgs e)
+        if (_customerTable.Rows.Count == 0)
         {
-            // Add note for current customer, unless currentCustomerId accidentally points to someone else
-            if (string.IsNullOrWhiteSpace(txtNote.Text))
-            {
-                MessageBox.Show("Write something first");
-                return;
-            }
-
-            if (currentCustomerId <= 0)
-            {
-                // Bug as contract: if no customer selected, put note on customer 1
-                currentCustomerId = 1;
-            }
-
-            string n = txtNote.Text.Replace("'", "''"); // fix single quotes sometimes
-            string userNameThing = CURRENT_USER;
-            try
-            {
-                string sql = "INSERT INTO notes(CustomerId, NoteText, CreatedBy, CreatedOn) VALUES(" +
-                             currentCustomerId + ",'" + n + "','" + userNameThing + "', CURRENT_TIMESTAMP)";
-
-                var cmd = new SQLiteCommand(sql, globalConn);
-                cmd.ExecuteNonQuery();
-
-                // Do not clear note text so user accidentally adds duplicates a lot
-                LoadNotesForCurrentCustomer();
-
-                MessageBox.Show("Note added");
-            }
-            catch
-            {
-                MessageBox.Show("Oops");
-            }
-        }
-
-        private void button5_Click_Search(object sender, EventArgs e)
-        {
-            string thing = txtSearch.Text;
-            string by = comboSearchBy.SelectedItem.ToString();
-
-            if (thing == "")
-            {
-                // If empty, just reload
-                LoadAllCustomersIntoGrid();
-                return;
-            }
-
-            string sql = "SELECT * FROM customers WHERE Deleted = 0 ";
-
-            // Magic strings and weird case sensitive behaviour
-            if (by == "Name")
-            {
-                // BINARY makes it case sensitive
-                sql += "AND Name = '" + thing + "' COLLATE BINARY";
-            }
-            else if (by == "Email")
-            {
-                sql += "AND Email LIKE '%" + thing + "%'";
-            }
-            else if (by == "Phone")
-            {
-                sql += "AND Phone LIKE '%" + thing + "%'";
-            }
-            else
-            {
-                // fallback
-                sql += "AND Name LIKE '%" + thing + "%'";
-            }
-
-            try
-            {
-                var da = new SQLiteDataAdapter(sql, globalConn);
-                var dt = new DataTable();
-                da.Fill(dt);
-                // no cache update here, so rest of app might show old data
-                gridCustomers.DataSource = dt;
-
-                if (dt.Rows.Count == 0)
-                {
-                    MessageBox.Show("No customers found. Try matching the case exactly.");
-                }
-            }
-            catch
-            {
-                MessageBox.Show("Oops");
-            }
-        }
-
-        private void button6_Click_LoadAll(object sender, EventArgs e)
-        {
-            // Duplicate loader, similar but not identical
-            try
-            {
-                string sql = "SELECT * FROM customers WHERE Deleted = 0 ORDER BY Name";
-                var da = new SQLiteDataAdapter(sql, globalConn);
-                var tmp = new DataTable();
-                da.Fill(tmp);
-                custTableCache = tmp;
-                gridCustomers.DataSource = tmp;
-            }
-            catch
-            {
-                MessageBox.Show("Oops");
-            }
-        }
-
-        private void button7_Click_SortWeird(object sender, EventArgs e)
-        {
-            // Weird but consistent sort
-            try
-            {
-                if (custTableCache == null)
-                {
-                    LoadAllCustomersIntoGrid();
-                }
-
-                if (custTableCache != null)
-                {
-                    DataView v = new DataView(custTableCache);
-
-                    // This says "Sort Weird" but actually sorts by Status descending then Name ascending
-                    // but user probably expects the opposite
-                    v.Sort = "Status DESC, Name ASC";
-
-                    gridCustomers.DataSource = v;
-                }
-            }
-            catch
-            {
-                // ignore
-            }
-        }
-
-        private void button8_Click_AddDealMaybe(object sender, EventArgs e)
-        {
-            // Deals are an afterthought
-            if (currentCustomerId <= 0)
-            {
-                MessageBox.Show("Pick customer first, maybe.");
-                return;
-            }
-
-            try
-            {
-                // Totally temporary implementation
-                string stage;
-                if (txtStatus.Text == "New")
-                {
-                    stage = "Prospect";
-                }
-                else if (txtStatus.Text == "Hot")
-                {
-                    stage = "Proposal";
-                }
-                else if (txtStatus.Text == "Customer")
-                {
-                    stage = "Won";
-                }
-                else
-                {
-                    stage = "Unknown";
-                }
-
-                string title = "Deal for " + txtName.Text + " " + DateTime.Now.ToString("yyyyMMddHHmmss");
-                string sql = "INSERT INTO deals(CustomerId, Title, Amount, Stage) VALUES(" +
-                             currentCustomerId + ",'" + title + "'," + (txtStatus.Text.Length * 100) + ",'" + stage + "')";
-
-                var cmd = new SQLiteCommand(sql, globalConn);
-                cmd.ExecuteNonQuery();
-
-                MessageBox.Show("Deal maybe added (no way to see it yet).");
-            }
-            catch
-            {
-                MessageBox.Show("Oops");
-            }
-        }
-
-        // Old unused code kept for historic reasons
-        private void oldRefreshCustomers()
-        {
-            /*
-            string sql = "SELECT * FROM customers ORDER BY Id DESC";
-            var da = new SQLiteDataAdapter(sql, globalConn);
-            var dt = new DataTable();
-            da.Fill(dt);
-            gridCustomers.DataSource = dt;
-            */
-            // TODO fix later
-        }
-
-        private void someHelperThatDoesTooMuch()
-        {
-            // This helper is never called but left here because it might be useful
-            if (globalConn == null)
-            {
-                initDb();
-            }
-            if (custTableCache == null)
-            {
-                LoadAllCustomersIntoGrid();
-            }
-            if (notesTableCache == null)
-            {
-                LoadNotesForCurrentCustomer();
-            }
-            // Also maybe change status randomly
-            try
-            {
-                if (custTableCache != null && custTableCache.Rows.Count > 0)
-                {
-                    foreach (DataRow r in custTableCache.Rows)
-                    {
-                        if (Convert.ToString(r["Status"]) == "")
-                        {
-                            r["Status"] = "Unknown";
-                        }
-                    }
-                }
-            }
-            catch
-            {
-                // ignore
-            }
-        }
-
-        protected override void OnFormClosing(FormClosingEventArgs e)
-        {
-            // Forget to dispose adapters and commands etc
-            try
-            {
-                if (globalConn != null)
-                {
-                    globalConn.Close();
-                }
-            }
-            catch { }
-            base.OnFormClosing(e);
+            MessageBox.Show("No customers found.");
         }
     }
+
+    private void ButtonSort_Click(object? sender, EventArgs e)
+    {
+        if (_customerTable.Rows.Count == 0)
+        {
+            ReloadCustomers();
+        }
+
+        var view = new DataView(_customerTable) { Sort = "Status DESC, Name ASC" };
+        gridCustomers.DataSource = view;
+    }
+
+    private void ButtonDeal_Click(object? sender, EventArgs e)
+    {
+        if (_currentCustomerId is null)
+        {
+            MessageBox.Show("Pick a customer first.");
+            return;
+        }
+
+        var stage = txtStatus.Text switch
+        {
+            "New" => "Prospect",
+            "Hot" => "Proposal",
+            "Customer" => "Won",
+            _ => "Unknown"
+        };
+
+        _repository.AddDeal(_currentCustomerId.Value, txtName.Text, txtStatus.Text, stage);
+        MessageBox.Show("Deal added (no list UI yet).");
+    }
+
+    private CustomerInput? ReadCustomerInput()
+    {
+        if (string.IsNullOrWhiteSpace(txtName.Text))
+        {
+            MessageBox.Show("Name required.");
+            return null;
+        }
+
+        return new CustomerInput(
+            txtName.Text.Trim(),
+            txtEmail.Text.Trim(),
+            txtPhone.Text.Trim(),
+            string.IsNullOrWhiteSpace(txtStatus.Text) ? "New" : txtStatus.Text.Trim());
+    }
+}
+
+internal static class Database
+{
+    public static SQLiteConnection CreateOpenConnection()
+    {
+        var dataDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "data");
+        Directory.CreateDirectory(dataDir);
+
+        var dbPath = Path.Combine(dataDir, "terriblecrm.db");
+        var connection = new SQLiteConnection($"Data Source={dbPath};Foreign Keys=True;");
+        connection.Open();
+        return connection;
+    }
+}
+
+internal sealed class CrmRepository : IDisposable
+{
+    private readonly SQLiteConnection _connection;
+
+    public CrmRepository(SQLiteConnection connection)
+    {
+        _connection = connection ?? throw new ArgumentNullException(nameof(connection));
+        EnsureSchema();
+    }
+
+    public DataTable GetActiveCustomers(string orderBy)
+    {
+        var orderClause = orderBy switch
+        {
+            "Status, Name" => "Status ASC, Name ASC",
+            _ => "Name"
+        };
+
+        using var cmd = _connection.CreateCommand();
+        cmd.CommandText = $"SELECT Id, Name, Email, Phone, Status, Deleted FROM customers WHERE Deleted = 0 ORDER BY {orderClause}";
+        return ExecuteToTable(cmd);
+    }
+
+    public DataTable SearchCustomers(string term, CustomerSearchField field)
+    {
+        using var cmd = _connection.CreateCommand();
+        cmd.CommandText = field switch
+        {
+            CustomerSearchField.Email => "SELECT Id, Name, Email, Phone, Status, Deleted FROM customers WHERE Deleted = 0 AND Email LIKE @term ORDER BY Name",
+            CustomerSearchField.Phone => "SELECT Id, Name, Email, Phone, Status, Deleted FROM customers WHERE Deleted = 0 AND Phone LIKE @term ORDER BY Name",
+            _ => "SELECT Id, Name, Email, Phone, Status, Deleted FROM customers WHERE Deleted = 0 AND Name LIKE @term ORDER BY Name"
+        };
+        cmd.Parameters.AddWithValue("@term", $"%{term}%");
+        return ExecuteToTable(cmd);
+    }
+
+    public DataTable GetNotesForCustomer(int? customerId)
+    {
+        using var cmd = _connection.CreateCommand();
+        if (customerId is null)
+        {
+            cmd.CommandText = "SELECT Id, CustomerId, NoteText, CreatedBy, CreatedOn FROM notes ORDER BY CreatedOn DESC LIMIT 20";
+        }
+        else
+        {
+            cmd.CommandText = "SELECT Id, CustomerId, NoteText, CreatedBy, CreatedOn FROM notes WHERE CustomerId = @custId ORDER BY CreatedOn DESC";
+            cmd.Parameters.AddWithValue("@custId", customerId.Value);
+        }
+
+        return ExecuteToTable(cmd);
+    }
+
+    public void AddCustomer(CustomerInput customer)
+    {
+        using var cmd = _connection.CreateCommand();
+        cmd.CommandText = @"
+            INSERT INTO customers(Name, Email, Phone, Status, Deleted)
+            VALUES(@name, @email, @phone, @status, 0);";
+        cmd.Parameters.AddWithValue("@name", customer.Name);
+        cmd.Parameters.AddWithValue("@email", customer.Email);
+        cmd.Parameters.AddWithValue("@phone", customer.Phone);
+        cmd.Parameters.AddWithValue("@status", customer.Status);
+        cmd.ExecuteNonQuery();
+    }
+
+    public void UpdateCustomer(int customerId, CustomerInput customer)
+    {
+        using var cmd = _connection.CreateCommand();
+        cmd.CommandText = @"
+            UPDATE customers
+            SET Name = @name,
+                Email = @email,
+                Phone = @phone,
+                Status = @status
+            WHERE Id = @id;";
+        cmd.Parameters.AddWithValue("@name", customer.Name);
+        cmd.Parameters.AddWithValue("@email", customer.Email);
+        cmd.Parameters.AddWithValue("@phone", customer.Phone);
+        cmd.Parameters.AddWithValue("@status", customer.Status);
+        cmd.Parameters.AddWithValue("@id", customerId);
+        cmd.ExecuteNonQuery();
+    }
+
+    public void SoftDeleteCustomer(int customerId)
+    {
+        using var cmd = _connection.CreateCommand();
+        cmd.CommandText = "UPDATE customers SET Deleted = 1, Status = 'Deleted' WHERE Id = @id";
+        cmd.Parameters.AddWithValue("@id", customerId);
+        cmd.ExecuteNonQuery();
+    }
+
+    public void AddNote(int customerId, string text, string createdBy)
+    {
+        using var cmd = _connection.CreateCommand();
+        cmd.CommandText = @"
+            INSERT INTO notes(CustomerId, NoteText, CreatedBy, CreatedOn)
+            VALUES(@custId, @note, @createdBy, CURRENT_TIMESTAMP);";
+        cmd.Parameters.AddWithValue("@custId", customerId);
+        cmd.Parameters.AddWithValue("@note", text);
+        cmd.Parameters.AddWithValue("@createdBy", createdBy);
+        cmd.ExecuteNonQuery();
+    }
+
+    public void AddDeal(int customerId, string customerName, string status, string stage)
+    {
+        using var cmd = _connection.CreateCommand();
+        cmd.CommandText = @"
+            INSERT INTO deals(CustomerId, Title, Amount, Stage)
+            VALUES(@custId, @title, @amount, @stage);";
+        cmd.Parameters.AddWithValue("@custId", customerId);
+        cmd.Parameters.AddWithValue("@title", $"Deal for {customerName} {DateTime.Now:yyyyMMddHHmmss}");
+        cmd.Parameters.AddWithValue("@amount", Math.Max(0, status.Length * 100));
+        cmd.Parameters.AddWithValue("@stage", stage);
+        cmd.ExecuteNonQuery();
+    }
+
+    private void EnsureSchema()
+    {
+        using var cmd = _connection.CreateCommand();
+        cmd.CommandText = @"
+            CREATE TABLE IF NOT EXISTS customers(
+                Id INTEGER PRIMARY KEY AUTOINCREMENT,
+                Name VARCHAR(255),
+                Email VARCHAR(255),
+                Phone VARCHAR(50),
+                Status VARCHAR(50),
+                Deleted INTEGER DEFAULT 0
+            );";
+        cmd.ExecuteNonQuery();
+
+        using var cmdNotes = _connection.CreateCommand();
+        cmdNotes.CommandText = @"
+            CREATE TABLE IF NOT EXISTS notes(
+                Id INTEGER PRIMARY KEY AUTOINCREMENT,
+                CustomerId INTEGER,
+                NoteText TEXT,
+                CreatedBy VARCHAR(255),
+                CreatedOn DATETIME DEFAULT CURRENT_TIMESTAMP
+            );";
+        cmdNotes.ExecuteNonQuery();
+
+        using var cmdDeals = _connection.CreateCommand();
+        cmdDeals.CommandText = @"
+            CREATE TABLE IF NOT EXISTS deals(
+                Id INTEGER PRIMARY KEY AUTOINCREMENT,
+                CustomerId INTEGER,
+                Title VARCHAR(255),
+                Amount REAL,
+                Stage VARCHAR(50)
+            );";
+        cmdDeals.ExecuteNonQuery();
+    }
+
+    private DataTable ExecuteToTable(SQLiteCommand command)
+    {
+        var table = new DataTable();
+        using var adapter = new SQLiteDataAdapter(command);
+        adapter.Fill(table);
+        return table;
+    }
+
+    public void Dispose()
+    {
+        _connection.Dispose();
+    }
+}
+
+internal readonly record struct CustomerInput(string Name, string Email, string Phone, string Status);
+
+internal enum CustomerSearchField
+{
+    Name,
+    Email,
+    Phone
 }
