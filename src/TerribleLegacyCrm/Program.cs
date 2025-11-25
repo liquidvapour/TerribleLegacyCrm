@@ -2,7 +2,7 @@ using System;
 using System.Data;
 using System.Drawing;
 using System.Windows.Forms;
-using MySql.Data.MySqlClient;
+using System.Data.SQLite;
 
 namespace TerribleLegacyCrm
 {
@@ -21,7 +21,7 @@ namespace TerribleLegacyCrm
     public class MainCrazyForm : Form
     {
         // Global stuff because why not
-        public static MySqlConnection globalConn;
+        public static SQLiteConnection globalConn;
         public static string CURRENT_USER = "admin"; // TODO implement login
         public static int currentCustomerId = -1;
         public static DataTable custTableCache;
@@ -234,39 +234,39 @@ namespace TerribleLegacyCrm
             try
             {
                 // Hardcoded connection string. Very secure.
-                string cs = "Server=localhost;Database=terriblecrm;Uid=root;Pwd=password;SslMode=None;";
-                globalConn = new MySqlConnection(cs);
+                string cs = "Data Source=data/terriblecrm.db;Foreign Keys=True;";
+                globalConn = new SQLiteConnection(cs);
                 globalConn.Open();
 
                 // Just make sure tables exist kind of
-                var cmd = new MySqlCommand(@"
+                var cmd = new SQLiteCommand(@"
                     CREATE TABLE IF NOT EXISTS customers(
-                        Id INT AUTO_INCREMENT PRIMARY KEY,
+                        Id INTEGER PRIMARY KEY AUTOINCREMENT,
                         Name VARCHAR(255),
                         Email VARCHAR(255),
                         Phone VARCHAR(50),
                         Status VARCHAR(50),
-                        Deleted TINYINT(1) DEFAULT 0
+                        Deleted INTEGER DEFAULT 0
                     );
                     ", globalConn);
                 cmd.ExecuteNonQuery();
 
-                var cmd2 = new MySqlCommand(@"
+                var cmd2 = new SQLiteCommand(@"
                     CREATE TABLE IF NOT EXISTS notes(
-                        Id INT AUTO_INCREMENT PRIMARY KEY,
-                        CustomerId INT,
+                        Id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        CustomerId INTEGER,
                         NoteText TEXT,
                         CreatedBy VARCHAR(255),
-                        CreatedOn DATETIME
+                        CreatedOn DATETIME DEFAULT CURRENT_TIMESTAMP
                     );", globalConn);
                 cmd2.ExecuteNonQuery();
 
-                var cmd3 = new MySqlCommand(@"
+                var cmd3 = new SQLiteCommand(@"
                     CREATE TABLE IF NOT EXISTS deals(
-                        Id INT AUTO_INCREMENT PRIMARY KEY,
-                        CustomerId INT,
+                        Id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        CustomerId INTEGER,
                         Title VARCHAR(255),
-                        Amount DECIMAL(18,2),
+                        Amount REAL,
                         Stage VARCHAR(50)
                     );", globalConn);
                 cmd3.ExecuteNonQuery();
@@ -284,7 +284,7 @@ namespace TerribleLegacyCrm
             {
                 // This function also used by other things, so careful changing it
                 string sql = "SELECT * FROM customers WHERE Deleted = 0 ORDER BY Name";
-                var da = new MySqlDataAdapter(sql, globalConn);
+                var da = new SQLiteDataAdapter(sql, globalConn);
                 var dt = new DataTable();
                 da.Fill(dt);
                 custTableCache = dt; // cache forever
@@ -311,7 +311,7 @@ namespace TerribleLegacyCrm
                     sql = "SELECT * FROM notes WHERE CustomerId = " + currentCustomerId + " ORDER BY CreatedOn DESC";
                 }
 
-                var da = new MySqlDataAdapter(sql, globalConn);
+                var da = new SQLiteDataAdapter(sql, globalConn);
                 var dt = new DataTable();
                 da.Fill(dt);
                 notesTableCache = dt;
@@ -380,12 +380,12 @@ namespace TerribleLegacyCrm
             {
                 string sql = "INSERT INTO customers(Name,Email,Phone,Status,Deleted) VALUES('" +
                              nm + "','" + em + "','" + ph + "','" + st + "',0)";
-                var cmd = new MySqlCommand(sql, globalConn);
+                var cmd = new SQLiteCommand(sql, globalConn);
                 cmd.ExecuteNonQuery();
 
                 // Refresh list with duplicate code
                 string sql2 = "SELECT * FROM customers WHERE Deleted = 0 ORDER BY Name";
-                var da = new MySqlDataAdapter(sql2, globalConn);
+                var da = new SQLiteDataAdapter(sql2, globalConn);
                 var dt = new DataTable();
                 da.Fill(dt);
                 custTableCache = dt;
@@ -421,12 +421,12 @@ namespace TerribleLegacyCrm
                              "', Status='" + st +
                              "' WHERE Id=" + currentCustomerId;
 
-                var cmd = new MySqlCommand(sql, globalConn);
+                var cmd = new SQLiteCommand(sql, globalConn);
                 cmd.ExecuteNonQuery();
 
                 // Another copy of refresh logic, slightly different order
                 string sql2 = "SELECT * FROM customers WHERE Deleted=0 ORDER BY Status, Name";
-                var da = new MySqlDataAdapter(sql2, globalConn);
+                var da = new SQLiteDataAdapter(sql2, globalConn);
                 var dt = new DataTable();
                 da.Fill(dt);
                 custTableCache = dt;
@@ -453,7 +453,7 @@ namespace TerribleLegacyCrm
             {
                 // Soft delete, but UI says Deleted
                 string sql = "UPDATE customers SET Deleted = 1, Status='Deleted' WHERE Id=" + currentCustomerId;
-                var cmd = new MySqlCommand(sql, globalConn);
+                var cmd = new SQLiteCommand(sql, globalConn);
                 cmd.ExecuteNonQuery();
 
                 // Load all again in a completely new way
@@ -489,9 +489,9 @@ namespace TerribleLegacyCrm
             try
             {
                 string sql = "INSERT INTO notes(CustomerId, NoteText, CreatedBy, CreatedOn) VALUES(" +
-                             currentCustomerId + ",'" + n + "','" + userNameThing + "', NOW())";
+                             currentCustomerId + ",'" + n + "','" + userNameThing + "', CURRENT_TIMESTAMP)";
 
-                var cmd = new MySqlCommand(sql, globalConn);
+                var cmd = new SQLiteCommand(sql, globalConn);
                 cmd.ExecuteNonQuery();
 
                 // Do not clear note text so user accidentally adds duplicates a lot
@@ -523,7 +523,7 @@ namespace TerribleLegacyCrm
             if (by == "Name")
             {
                 // BINARY makes it case sensitive
-                sql += "AND BINARY Name = '" + thing + "'";
+                sql += "AND Name = '" + thing + "' COLLATE BINARY";
             }
             else if (by == "Email")
             {
@@ -541,7 +541,7 @@ namespace TerribleLegacyCrm
 
             try
             {
-                var da = new MySqlDataAdapter(sql, globalConn);
+                var da = new SQLiteDataAdapter(sql, globalConn);
                 var dt = new DataTable();
                 da.Fill(dt);
                 // no cache update here, so rest of app might show old data
@@ -564,7 +564,7 @@ namespace TerribleLegacyCrm
             try
             {
                 string sql = "SELECT * FROM customers WHERE Deleted = 0 ORDER BY Name";
-                var da = new MySqlDataAdapter(sql, globalConn);
+                var da = new SQLiteDataAdapter(sql, globalConn);
                 var tmp = new DataTable();
                 da.Fill(tmp);
                 custTableCache = tmp;
@@ -637,7 +637,7 @@ namespace TerribleLegacyCrm
                 string sql = "INSERT INTO deals(CustomerId, Title, Amount, Stage) VALUES(" +
                              currentCustomerId + ",'" + title + "'," + (txtStatus.Text.Length * 100) + ",'" + stage + "')";
 
-                var cmd = new MySqlCommand(sql, globalConn);
+                var cmd = new SQLiteCommand(sql, globalConn);
                 cmd.ExecuteNonQuery();
 
                 MessageBox.Show("Deal maybe added (no way to see it yet).");
@@ -653,7 +653,7 @@ namespace TerribleLegacyCrm
         {
             /*
             string sql = "SELECT * FROM customers ORDER BY Id DESC";
-            var da = new MySqlDataAdapter(sql, globalConn);
+            var da = new SQLiteDataAdapter(sql, globalConn);
             var dt = new DataTable();
             da.Fill(dt);
             gridCustomers.DataSource = dt;
