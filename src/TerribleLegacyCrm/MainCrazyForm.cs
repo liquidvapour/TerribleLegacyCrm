@@ -1,16 +1,12 @@
-using System.Data;
-using System.Drawing;
-using System.Windows.Forms;
-
 namespace TerribleLegacyCrm;
 
 internal sealed class MainCrazyForm : Form
 {
     private readonly CrmRepository _repository;
     private readonly string _currentUser = "admin";
-    private int? _currentCustomerId;
-    private DataTable _customerTable = new();
-    private DataTable _notesTable = new();
+    private readonly MainViewModel _vm;
+    private BindingSource _customersSource = null!;
+    private BindingSource _notesSource = null!;
 
     private DataGridView gridCustomers = null!;
     private DataGridView gridNotes = null!;
@@ -26,6 +22,7 @@ internal sealed class MainCrazyForm : Form
     public MainCrazyForm(CrmRepository repository)
     {
         _repository = repository;
+        _vm = new MainViewModel(_repository, _currentUser);
 
         Text = "SuperCRM 2010 (clean-ish)";
         Width = 1200;
@@ -33,8 +30,8 @@ internal sealed class MainCrazyForm : Form
         StartPosition = FormStartPosition.CenterScreen;
 
         InitControls();
-        ReloadCustomers();
-        ReloadNotes();
+        InitBindings();
+        _vm.LoadCustomers();
     }
 
     private void InitControls()
@@ -46,10 +43,10 @@ internal sealed class MainCrazyForm : Form
             ReadOnly = true,
             SelectionMode = DataGridViewSelectionMode.FullRowSelect,
             MultiSelect = false,
-            AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill
+            AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+            AutoGenerateColumns = true
         };
-        gridCustomers.CellClick += GridCustomers_CellClick;
-        gridCustomers.DataBindingComplete += GridCustomers_DataBindingComplete;
+        gridCustomers.SelectionChanged += GridCustomers_SelectionChanged;
         Controls.Add(gridCustomers);
 
         gridNotes = new DataGridView
@@ -120,7 +117,7 @@ internal sealed class MainCrazyForm : Form
         Controls.Add(buttonSearch);
 
         var buttonLoadAll = new Button { Text = "Load All", Location = new Point(xBase + 90, yBase + 210) };
-        buttonLoadAll.Click += (_, _) => ReloadCustomers();
+        buttonLoadAll.Click += (_, _) => _vm.LoadCustomers();
         Controls.Add(buttonLoadAll);
 
         var buttonSort = new Button { Text = "Sort Weird", Location = new Point(xBase + 180, yBase + 210) };
@@ -148,137 +145,110 @@ internal sealed class MainCrazyForm : Form
         Controls.Add(lblSelectedCustomer);
     }
 
-    private void ReloadCustomers(string order = "Name")
+    private void InitBindings()
     {
-        _customerTable = _repository.GetActiveCustomers(order);
-        gridCustomers.DataSource = _customerTable;
+        _customersSource = new BindingSource { DataSource = _vm.Customers };
+        _customersSource.CurrentChanged += CustomersSource_CurrentChanged;
+        gridCustomers.DataSource = _customersSource;
+
+        _notesSource = new BindingSource { DataSource = _vm.Notes };
+        gridNotes.DataSource = _notesSource;
+
+        txtName.DataBindings.Add("Text", _vm.Editor, nameof(CustomerEditorViewModel.Name), true, DataSourceUpdateMode.OnPropertyChanged);
+        txtEmail.DataBindings.Add("Text", _vm.Editor, nameof(CustomerEditorViewModel.Email), true, DataSourceUpdateMode.OnPropertyChanged);
+        txtPhone.DataBindings.Add("Text", _vm.Editor, nameof(CustomerEditorViewModel.Phone), true, DataSourceUpdateMode.OnPropertyChanged);
+        txtStatus.DataBindings.Add("Text", _vm.Editor, nameof(CustomerEditorViewModel.Status), true, DataSourceUpdateMode.OnPropertyChanged);
+
+        lblSelectedCustomer.DataBindings.Add("Text", _vm, nameof(MainViewModel.SelectedCustomerLabel));
+        txtSearch.DataBindings.Add("Text", _vm, nameof(MainViewModel.SearchTerm), true, DataSourceUpdateMode.OnPropertyChanged);
+        txtNote.DataBindings.Add("Text", _vm, nameof(MainViewModel.NewNoteText), true, DataSourceUpdateMode.OnPropertyChanged);
+
+        comboSearchBy.SelectedIndexChanged += ComboSearchBy_SelectedIndexChanged;
+        SyncSearchField();
     }
 
-    private void ReloadNotes()
+    private void CustomersSource_CurrentChanged(object? sender, EventArgs e)
     {
-        _notesTable = _repository.GetNotesForCustomer(_currentCustomerId);
-        gridNotes.DataSource = _notesTable;
+        _vm.SelectedCustomer = _customersSource.Current as CustomerViewModel;
     }
 
-    private void GridCustomers_DataBindingComplete(object? sender, DataGridViewBindingCompleteEventArgs e)
+    private void GridCustomers_SelectionChanged(object? sender, EventArgs e)
     {
-        var columns = gridCustomers?.Columns;
-        var deletedColumn = columns?["Deleted"];
-        if (deletedColumn != null)
-        {
-            deletedColumn.Visible = false;
-        }
+        _vm.SelectedCustomer = _customersSource.Current as CustomerViewModel;
     }
 
-    private void GridCustomers_CellClick(object? sender, DataGridViewCellEventArgs e)
+    private void ComboSearchBy_SelectedIndexChanged(object? sender, EventArgs e)
     {
-        if (e.RowIndex < 0 || e.RowIndex >= gridCustomers.Rows.Count)
-        {
-            return;
-        }
-
-        var row = gridCustomers.Rows[e.RowIndex];
-        if (!int.TryParse(row.Cells["Id"].Value?.ToString(), out var id))
-        {
-            return;
-        }
-
-        _currentCustomerId = id;
-        lblSelectedCustomer.Text = $"Selected: {row.Cells["Name"].Value}";
-        txtName.Text = row.Cells["Name"].Value?.ToString() ?? string.Empty;
-        txtEmail.Text = row.Cells["Email"].Value?.ToString() ?? string.Empty;
-        txtPhone.Text = row.Cells["Phone"].Value?.ToString() ?? string.Empty;
-        txtStatus.Text = row.Cells["Status"].Value?.ToString() ?? string.Empty;
-        ReloadNotes();
+        SyncSearchField();
     }
 
-    private void ButtonAdd_Click(object? sender, EventArgs e)
+    private void SyncSearchField()
     {
-        var input = ReadCustomerInput();
-        if (input == null)
-        {
-            return;
-        }
-
-        _repository.AddCustomer(input.Value);
-        ReloadCustomers();
-        MessageBox.Show("Customer added.");
-    }
-
-    private void ButtonEdit_Click(object? sender, EventArgs e)
-    {
-        if (_currentCustomerId is null)
-        {
-            MessageBox.Show("Select a customer first.");
-            return;
-        }
-
-        var input = ReadCustomerInput();
-        if (input == null)
-        {
-            return;
-        }
-
-        _repository.UpdateCustomer(_currentCustomerId.Value, input.Value);
-        ReloadCustomers("Status, Name");
-        MessageBox.Show("Customer updated.");
-    }
-
-    private void ButtonDelete_Click(object? sender, EventArgs e)
-    {
-        if (_currentCustomerId is null)
-        {
-            MessageBox.Show("Select a customer to delete.");
-            return;
-        }
-
-        _repository.SoftDeleteCustomer(_currentCustomerId.Value);
-        _currentCustomerId = null;
-        lblSelectedCustomer.Text = "Selected: (none)";
-        ReloadCustomers();
-        ReloadNotes();
-        MessageBox.Show("Customer deleted (soft delete).");
-    }
-
-    private void ButtonAddNote_Click(object? sender, EventArgs e)
-    {
-        if (_currentCustomerId is null)
-        {
-            MessageBox.Show("Pick a customer first.");
-            return;
-        }
-
-        if (string.IsNullOrWhiteSpace(txtNote.Text))
-        {
-            MessageBox.Show("Write something first.");
-            return;
-        }
-
-        _repository.AddNote(_currentCustomerId.Value, txtNote.Text.Trim(), _currentUser);
-        txtNote.Clear();
-        ReloadNotes();
-        MessageBox.Show("Note added.");
-    }
-
-    private void ButtonSearch_Click(object? sender, EventArgs e)
-    {
-        if (string.IsNullOrWhiteSpace(txtSearch.Text))
-        {
-            ReloadCustomers();
-            return;
-        }
-
-        var field = comboSearchBy.SelectedItem?.ToString() switch
+        _vm.SearchField = comboSearchBy.SelectedItem?.ToString() switch
         {
             "Email" => CustomerSearchField.Email,
             "Phone" => CustomerSearchField.Phone,
             _ => CustomerSearchField.Name
         };
+    }
 
-        _customerTable = _repository.SearchCustomers(txtSearch.Text.Trim(), field);
-        gridCustomers.DataSource = _customerTable;
+    private void ButtonAdd_Click(object? sender, EventArgs e)
+    {
+        try
+        {
+            _vm.AddCustomer();
+            MessageBox.Show("Customer added.");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message);
+        }
+    }
 
-        if (_customerTable.Rows.Count == 0)
+    private void ButtonEdit_Click(object? sender, EventArgs e)
+    {
+        try
+        {
+            _vm.UpdateCustomer();
+            MessageBox.Show("Customer updated.");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message);
+        }
+    }
+
+    private void ButtonDelete_Click(object? sender, EventArgs e)
+    {
+        try
+        {
+            _vm.DeleteCustomer();
+            MessageBox.Show("Customer deleted (soft delete).");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message);
+        }
+    }
+
+    private void ButtonAddNote_Click(object? sender, EventArgs e)
+    {
+        try
+        {
+            _vm.AddNote();
+            MessageBox.Show("Note added.");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message);
+        }
+    }
+
+    private void ButtonSearch_Click(object? sender, EventArgs e)
+    {
+        SyncSearchField();
+        _vm.SearchCustomers();
+        if (_vm.Customers.Count == 0)
         {
             MessageBox.Show("No customers found.");
         }
@@ -286,47 +256,19 @@ internal sealed class MainCrazyForm : Form
 
     private void ButtonSort_Click(object? sender, EventArgs e)
     {
-        if (_customerTable.Rows.Count == 0)
-        {
-            ReloadCustomers();
-        }
-
-        var view = new DataView(_customerTable) { Sort = "Status DESC, Name ASC" };
-        gridCustomers.DataSource = view;
+        _vm.SortCustomers("Status, Name");
     }
 
     private void ButtonDeal_Click(object? sender, EventArgs e)
     {
-        if (_currentCustomerId is null)
+        try
         {
-            MessageBox.Show("Pick a customer first.");
-            return;
+            _vm.AddDeal();
+            MessageBox.Show("Deal added (no list UI yet).");
         }
-
-        var stage = txtStatus.Text switch
+        catch (Exception ex)
         {
-            "New" => "Prospect",
-            "Hot" => "Proposal",
-            "Customer" => "Won",
-            _ => "Unknown"
-        };
-
-        _repository.AddDeal(_currentCustomerId.Value, txtName.Text, txtStatus.Text, stage);
-        MessageBox.Show("Deal added (no list UI yet).");
-    }
-
-    private CustomerInput? ReadCustomerInput()
-    {
-        if (string.IsNullOrWhiteSpace(txtName.Text))
-        {
-            MessageBox.Show("Name required.");
-            return null;
+            MessageBox.Show(ex.Message);
         }
-
-        return new CustomerInput(
-            txtName.Text.Trim(),
-            txtEmail.Text.Trim(),
-            txtPhone.Text.Trim(),
-            string.IsNullOrWhiteSpace(txtStatus.Text) ? "New" : txtStatus.Text.Trim());
     }
 }

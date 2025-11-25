@@ -1,4 +1,3 @@
-using System.Data;
 using System.Data.SQLite;
 
 namespace TerribleLegacyCrm;
@@ -13,7 +12,7 @@ internal sealed class CrmRepository : IDisposable
         EnsureSchema();
     }
 
-    public DataTable GetActiveCustomers(string orderBy)
+    public List<Customer> GetActiveCustomers(string orderBy)
     {
         var orderClause = orderBy switch
         {
@@ -23,10 +22,10 @@ internal sealed class CrmRepository : IDisposable
 
         using var cmd = _connection.CreateCommand();
         cmd.CommandText = $"SELECT Id, Name, Email, Phone, Status, Deleted FROM customers WHERE Deleted = 0 ORDER BY {orderClause}";
-        return ExecuteToTable(cmd);
+        return ExecuteCustomers(cmd);
     }
 
-    public DataTable SearchCustomers(string term, CustomerSearchField field)
+    public List<Customer> SearchCustomers(string term, CustomerSearchField field)
     {
         using var cmd = _connection.CreateCommand();
         cmd.CommandText = field switch
@@ -36,10 +35,10 @@ internal sealed class CrmRepository : IDisposable
             _ => "SELECT Id, Name, Email, Phone, Status, Deleted FROM customers WHERE Deleted = 0 AND Name LIKE @term ORDER BY Name"
         };
         cmd.Parameters.AddWithValue("@term", $"%{term}%");
-        return ExecuteToTable(cmd);
+        return ExecuteCustomers(cmd);
     }
 
-    public DataTable GetNotesForCustomer(int? customerId)
+    public List<Note> GetNotesForCustomer(int? customerId)
     {
         using var cmd = _connection.CreateCommand();
         if (customerId is null)
@@ -52,20 +51,22 @@ internal sealed class CrmRepository : IDisposable
             cmd.Parameters.AddWithValue("@custId", customerId.Value);
         }
 
-        return ExecuteToTable(cmd);
+        return ExecuteNotes(cmd);
     }
 
-    public void AddCustomer(CustomerInput customer)
+    public int AddCustomer(CustomerInput customer)
     {
         using var cmd = _connection.CreateCommand();
         cmd.CommandText = @"
             INSERT INTO customers(Name, Email, Phone, Status, Deleted)
-            VALUES(@name, @email, @phone, @status, 0);";
+            VALUES(@name, @email, @phone, @status, 0);
+            SELECT last_insert_rowid();";
         cmd.Parameters.AddWithValue("@name", customer.Name);
         cmd.Parameters.AddWithValue("@email", customer.Email);
         cmd.Parameters.AddWithValue("@phone", customer.Phone);
         cmd.Parameters.AddWithValue("@status", customer.Status);
-        cmd.ExecuteNonQuery();
+        var id = cmd.ExecuteScalar();
+        return Convert.ToInt32(id);
     }
 
     public void UpdateCustomer(int customerId, CustomerInput customer)
@@ -119,6 +120,31 @@ internal sealed class CrmRepository : IDisposable
         cmd.ExecuteNonQuery();
     }
 
+    private static Customer ReadCustomer(SQLiteDataReader reader)
+    {
+        return new Customer
+        {
+            Id = reader.GetInt32(0),
+            Name = reader.GetString(1),
+            Email = reader.GetString(2),
+            Phone = reader.GetString(3),
+            Status = reader.GetString(4),
+            Deleted = reader.GetInt32(5) == 1
+        };
+    }
+
+    private static Note ReadNote(SQLiteDataReader reader)
+    {
+        return new Note
+        {
+            Id = reader.GetInt32(0),
+            CustomerId = reader.GetInt32(1),
+            NoteText = reader.GetString(2),
+            CreatedBy = reader.GetString(3),
+            CreatedOn = reader.GetDateTime(4)
+        };
+    }
+
     private void EnsureSchema()
     {
         using var cmd = _connection.CreateCommand();
@@ -156,12 +182,28 @@ internal sealed class CrmRepository : IDisposable
         cmdDeals.ExecuteNonQuery();
     }
 
-    private DataTable ExecuteToTable(SQLiteCommand command)
+    private List<Customer> ExecuteCustomers(SQLiteCommand command)
     {
-        var table = new DataTable();
-        using var adapter = new SQLiteDataAdapter(command);
-        adapter.Fill(table);
-        return table;
+        using var reader = command.ExecuteReader();
+        var customers = new List<Customer>();
+        while (reader.Read())
+        {
+            customers.Add(ReadCustomer(reader));
+        }
+
+        return customers;
+    }
+
+    private List<Note> ExecuteNotes(SQLiteCommand command)
+    {
+        using var reader = command.ExecuteReader();
+        var notes = new List<Note>();
+        while (reader.Read())
+        {
+            notes.Add(ReadNote(reader));
+        }
+
+        return notes;
     }
 
     public void Dispose()

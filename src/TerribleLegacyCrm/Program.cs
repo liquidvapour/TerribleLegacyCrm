@@ -1,5 +1,3 @@
-using System.Windows.Forms;
-
 namespace TerribleLegacyCrm;
 
 internal static class Program
